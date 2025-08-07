@@ -168,11 +168,7 @@ bool GpuLidarSensor::Load(const sdf::Sensor &_sdf)
   {
     return false;
   }
-
-  gzmsg << "[GpuLidarSensor] ======================================" << std::endl;
-  gzmsg << "[GpuLidarSensor] SDF PATTERN FILE PATH DETECTION" << std::endl;
-  gzmsg << "[GpuLidarSensor] ======================================" << std::endl;
-  
+ 
   bool patternFound = false;
   
   // Approach 1: Check main sensor element (preferred)
@@ -357,10 +353,10 @@ bool GpuLidarSensor::Load(const sdf::Sensor &_sdf)
   // by ROS1: https://github.com/ros/common_msgs/pull/77. Ideally, memory
   // alignment should be configured. This same problem is in the
   // RgbdCameraSensor.
-  gz::msgs::InitPointCloudPacked(this->dataPtr->pointMsg, this->FrameId(), true,
-      {{"xyz", gz::msgs::PointCloudPacked::Field::FLOAT32},
-      {"intensity", gz::msgs::PointCloudPacked::Field::FLOAT32},
-      {"ring", gz::msgs::PointCloudPacked::Field::UINT16}});
+  msgs::InitPointCloudPacked(this->dataPtr->pointMsg, this->FrameId(), true,
+      {{"xyz", msgs::PointCloudPacked::Field::FLOAT32},
+      {"intensity", msgs::PointCloudPacked::Field::FLOAT32},
+      {"ring", msgs::PointCloudPacked::Field::UINT16}});
 
   if (this->Scene())
     this->CreateLidar();
@@ -551,7 +547,7 @@ bool GpuLidarSensor::Update(const std::chrono::steady_clock::duration &_now)
   {
     // Set the time stamp
     *this->dataPtr->pointMsg.mutable_header()->mutable_stamp() =
-      gz::msgs::Convert(_now);
+      msgs::Convert(_now);
     // Set frame_id
     for (auto i = 0;
          i < this->dataPtr->pointMsg.mutable_header()->data_size();
@@ -817,7 +813,6 @@ const std::vector<GpuLidarSensor::ScanPoint>& GpuLidarSensor::GetCurrentFramePat
 //////////////////////////////////////////////////
 void GpuLidarSensorPrivate::FillPointCloudMsg(const float *_laserBuffer)
 {
-  // Original standard scanning implementation
   GZ_PROFILE("GpuLidarSensorPrivate::FillPointCloudMsg");
   uint32_t width = this->pointMsg.width();
   uint32_t height = this->pointMsg.height();
@@ -853,39 +848,42 @@ void GpuLidarSensorPrivate::FillPointCloudMsg(const float *_laserBuffer)
       float depth = _laserBuffer[index];
       // Validate Depth/Radius and update pointcloud density flag
       if (isDense)
-        isDense = !std::isinf(depth) && !std::isnan(depth);
+        isDense = !(gz::math::isnan(depth) || std::isinf(depth));
+
+      float intensity = _laserBuffer[index + 1];
+      uint16_t ring = j;
+
+      int fieldIndex = 0;
 
       // Convert spherical coordinates to Cartesian for pointcloud
-      // math: x = depth * cos(inclination) * cos(azimuth)
-      //       y = depth * cos(inclination) * sin(azimuth)
-      //       z = depth * sin(inclination)
-      float pointX = depth * cosf(inclination) * cosf(azimuth);
-      float pointY = depth * cosf(inclination) * sinf(azimuth);
-      float pointZ = depth * sinf(inclination);
+      // See https://en.wikipedia.org/wiki/Spherical_coordinate_system
+      *reinterpret_cast<float *>(msgBufferIndex +
+          this->pointMsg.field(fieldIndex++).offset()) =
+        depth * std::cos(inclination) * std::cos(azimuth);
 
-      // Intensity and ring values
-      float intensity = _laserBuffer[index + 1];
-      uint16_t ring = static_cast<uint16_t>(j);
+      *reinterpret_cast<float *>(msgBufferIndex +
+          this->pointMsg.field(fieldIndex++).offset()) =
+        depth * std::cos(inclination) * std::sin(azimuth);
 
-      // Pack data into buffer - directly copy floats as bytes
-      memcpy(msgBufferIndex, &pointX, sizeof(pointX));
-      msgBufferIndex += sizeof(pointX);
-      memcpy(msgBufferIndex, &pointY, sizeof(pointY));
-      msgBufferIndex += sizeof(pointY);
-      memcpy(msgBufferIndex, &pointZ, sizeof(pointZ));
-      msgBufferIndex += sizeof(pointZ);
-      memcpy(msgBufferIndex, &intensity, sizeof(intensity));
-      msgBufferIndex += sizeof(intensity);
-      memcpy(msgBufferIndex, &ring, sizeof(ring));
-      msgBufferIndex += sizeof(ring);
+      *reinterpret_cast<float *>(msgBufferIndex +
+          this->pointMsg.field(fieldIndex++).offset()) =
+        depth * std::sin(inclination);
 
-      // Advance azimuth
+      // Intensity
+      *reinterpret_cast<float *>(msgBufferIndex +
+          this->pointMsg.field(fieldIndex++).offset()) = intensity;
+
+      // Ring
+      *reinterpret_cast<uint16_t *>(msgBufferIndex +
+          this->pointMsg.field(fieldIndex++).offset()) = ring;
+
+      // Move the index to the next point.
+      msgBufferIndex += this->pointMsg.point_step();
+
       azimuth += angleStep;
     }
-    // Advance elevation/inclination
     inclination += verticleAngleStep;
   }
-  // Update pointcloud density status
   this->pointMsg.set_is_dense(isDense);
 }
 
