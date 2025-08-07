@@ -134,6 +134,20 @@ target_link_libraries(${gpu_lidar_target}
     ${lidar_target}
 )
 
+set(gpu_lidar_with_scanning_pattern_sources GpuLidarWithScanningPatternSensor.cc)
+gz_add_component(gpu_lidar_with_scanning_pattern
+  DEPENDS_ON_COMPONENTS lidar
+  SOURCES ${gpu_lidar_with_scanning_pattern_sources}
+  GET_TARGET_NAME gpu_lidar_with_scanning_pattern_target
+)
+target_compile_definitions(${gpu_lidar_with_scanning_pattern_target} PUBLIC GpuLidarWithScanningPatternSensor_EXPORTS)
+target_link_libraries(${gpu_lidar_with_scanning_pattern_target}
+  PRIVATE
+    gz-msgs${GZ_MSGS_VER}::gz-msgs${GZ_MSGS_VER}
+    gz-transport${GZ_TRANSPORT_VER}::gz-transport${GZ_TRANSPORT_VER}
+    ${lidar_target}
+)
+
 set(logical_camera_sources LogicalCameraSensor.cc)
 gz_add_component(logical_camera SOURCES ${logical_camera_sources} GET_TARGET_NAME logical_camera_target)
 target_compile_definitions(${logical_camera_target} PUBLIC LogicalCameraSensor_EXPORTS)

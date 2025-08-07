@@ -1,5 +1,7 @@
 # CMake folders
 build
+install
+log
 
 # OS generated files
 .DS_Store
