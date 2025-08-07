@@ -19,6 +19,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <sdf/sdf.hh>
 
@@ -129,14 +130,35 @@ namespace gz
       /// \return gz::common::Connection pointer
       public: virtual gz::common::ConnectionPtr ConnectNewLidarFrame(
           std::function<void(const float *_scan, unsigned int _width,
-                  unsigned int _heighti, unsigned int _channels,
+                  unsigned int _height, unsigned int _channels,
                   const std::string &/*_format*/)> _subscriber) override;
 
       /// \brief Connect function pointer to internal GpuRays callback
       /// \return gz::common::Connection pointer
       private: void OnNewLidarFrame(const float *_scan, unsigned int _width,
-                  unsigned int _heighti, unsigned int _channels,
+                  unsigned int _height, unsigned int _channels,
                   const std::string &_format);
+
+      // NEW: Pattern scanning functionality for CSV-based Avia patterns
+      /// \brief Data structure for a single scan point from CSV pattern
+      public: struct ScanPoint {
+        double theta;  // Azimuth angle [radians]
+        double phi;    // Elevation angle [radians]  
+        double time;   // Normalized time within frame [0, 1]
+      };
+
+      /// \brief Load scanning pattern from CSV file
+      /// \param[in] _patternFilePath Path to CSV file
+      /// \return True if loading was successful
+      private: bool LoadScanningPattern(const std::string &_patternFilePath);
+
+      /// \brief Get current frame pattern for efficient access
+      /// \return Const reference to current frame's scan points
+      private: const std::vector<ScanPoint>& GetCurrentFramePattern() const;
+
+      /// \brief Check if pattern-based scanning is enabled
+      /// \return True if pattern file was loaded successfully
+      public: bool IsPatternScanningEnabled() const;
 
       GZ_UTILS_WARN_IGNORE__DLL_INTERFACE_MISSING
       /// \brief Data pointer for private data
