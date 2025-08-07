@@ -159,15 +159,7 @@ namespace gz
       /// \return True if pattern file was loaded successfully
       public: bool IsPatternScanningEnabled() const;
 
-      /// \brief Convert pattern angles to GPU ray grid indices
-      /// \param[in] _theta Azimuth angle in radians
-      /// \param[in] _phi Elevation angle in radians
-      /// \param[out] _rayIndex Horizontal ray index
-      /// \param[out] _verticalIndex Vertical ray index
-      /// \return True if angles are within sensor FOV
-      private: bool PatternAnglesToIndices(double _theta, double _phi, 
-                                          unsigned int &_rayIndex, 
-                                          unsigned int &_verticalIndex) const;
+
 
       GZ_UTILS_WARN_IGNORE__DLL_INTERFACE_MISSING
       /// \brief Data pointer for private data

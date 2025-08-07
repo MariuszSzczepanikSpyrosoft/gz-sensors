@@ -100,6 +100,16 @@ class gz::sensors::GpuLidarSensorPrivate
 
   /// \brief Reference to parent sensor for accessing protected methods
   public: GpuLidarSensor* parentSensor = nullptr;
+
+  /// \brief Convert pattern angles to GPU ray grid indices
+  /// \param[in] _theta Azimuth angle in radians
+  /// \param[in] _phi Elevation angle in radians
+  /// \param[out] _rayIndex Horizontal ray index
+  /// \param[out] _verticalIndex Vertical ray index
+  /// \return True if angles are within sensor FOV
+  private: bool PatternAnglesToIndices(double _theta, double _phi, 
+                                      unsigned int &_rayIndex, 
+                                      unsigned int &_verticalIndex) const;
 };
 
 //////////////////////////////////////////////////
@@ -697,43 +707,7 @@ const std::vector<GpuLidarSensor::ScanPoint>& GpuLidarSensor::GetCurrentFramePat
   return this->dataPtr->multiFramePattern[this->dataPtr->currentPatternFrame];
 }
 
-//////////////////////////////////////////////////
-bool GpuLidarSensor::PatternAnglesToIndices(double _theta, double _phi, 
-                                           unsigned int &_rayIndex, 
-                                           unsigned int &_verticalIndex) const
-{
-  if (!this->dataPtr->gpuRays)
-    return false;
 
-  // Convert pattern angles to GPU ray grid indices
-  double angleMin = this->dataPtr->gpuRays->AngleMin().Radian();
-  double angleMax = this->dataPtr->gpuRays->AngleMax().Radian();
-  double verticalAngleMin = this->dataPtr->gpuRays->VerticalAngleMin().Radian();
-  double verticalAngleMax = this->dataPtr->gpuRays->VerticalAngleMax().Radian();
-  
-  unsigned int rayCount = this->dataPtr->gpuRays->RangeCount();
-  unsigned int verticalRayCount = this->dataPtr->gpuRays->VerticalRangeCount();
-
-  // Check if angles are within sensor FOV
-  if (_theta < angleMin || _theta > angleMax || 
-      _phi < verticalAngleMin || _phi > verticalAngleMax)
-  {
-    return false;
-  }
-
-  // Calculate indices
-  double horizontalRatio = (_theta - angleMin) / (angleMax - angleMin);
-  double verticalRatio = (_phi - verticalAngleMin) / (verticalAngleMax - verticalAngleMin);
-  
-  _rayIndex = static_cast<unsigned int>(horizontalRatio * (rayCount - 1));
-  _verticalIndex = static_cast<unsigned int>(verticalRatio * (verticalRayCount - 1));
-  
-  // Ensure indices are within bounds
-  _rayIndex = std::min(_rayIndex, rayCount - 1);
-  _verticalIndex = std::min(_verticalIndex, verticalRayCount - 1);
-
-  return true;
-}
 
 //////////////////////////////////////////////////
 void GpuLidarSensorPrivate::FillPointCloudMsg(const float *_laserBuffer)
@@ -843,8 +817,7 @@ void GpuLidarSensorPrivate::FillPointCloudMsgWithPattern(const float *_laserBuff
     unsigned int rayIndex, verticalIndex;
     
     // Convert pattern angles to GPU ray grid indices
-    if (!this->parentSensor->PatternAnglesToIndices(patternPoint.theta, patternPoint.phi, 
-                                                   rayIndex, verticalIndex))
+    if (!this->PatternAnglesToIndices(patternPoint.theta, patternPoint.phi, rayIndex, verticalIndex))
     {
       // Point is outside sensor FOV
       continue;
@@ -910,4 +883,42 @@ void GpuLidarSensorPrivate::FillPointCloudMsgWithPattern(const float *_laserBuff
           << ": " << validPoints << " valid points from " << currentFrame.size() 
           << " pattern points" << std::endl;
   }
+}
+
+//////////////////////////////////////////////////
+bool GpuLidarSensorPrivate::PatternAnglesToIndices(double _theta, double _phi, 
+                                                  unsigned int &_rayIndex, 
+                                                  unsigned int &_verticalIndex) const
+{
+  if (!this->gpuRays)
+    return false;
+
+  // Convert pattern angles to GPU ray grid indices
+  double angleMin = this->gpuRays->AngleMin().Radian();
+  double angleMax = this->gpuRays->AngleMax().Radian();
+  double verticalAngleMin = this->gpuRays->VerticalAngleMin().Radian();
+  double verticalAngleMax = this->gpuRays->VerticalAngleMax().Radian();
+  
+  unsigned int rayCount = this->gpuRays->RangeCount();
+  unsigned int verticalRayCount = this->gpuRays->VerticalRangeCount();
+
+  // Check if angles are within sensor FOV
+  if (_theta < angleMin || _theta > angleMax || 
+      _phi < verticalAngleMin || _phi > verticalAngleMax)
+  {
+    return false;
+  }
+
+  // Calculate indices
+  double horizontalRatio = (_theta - angleMin) / (angleMax - angleMin);
+  double verticalRatio = (_phi - verticalAngleMin) / (verticalAngleMax - verticalAngleMin);
+  
+  _rayIndex = static_cast<unsigned int>(horizontalRatio * (rayCount - 1));
+  _verticalIndex = static_cast<unsigned int>(verticalRatio * (verticalRayCount - 1));
+  
+  // Ensure indices are within bounds
+  _rayIndex = std::min(_rayIndex, rayCount - 1);
+  _verticalIndex = std::min(_verticalIndex, verticalRayCount - 1);
+
+  return true;
 }
