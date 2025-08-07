@@ -33,11 +33,13 @@
 #include "gz/sensors/GpuLidarSensor.hh"
 #include "gz/sensors/SensorFactory.hh"
 
-// NEW: Additional includes for pattern scanning
+// Pattern scanning includes
 #include <fstream>
 #include <sstream>
 #include <map>
 #include <chrono>
+#include <algorithm>
+#include <cmath>
 
 using namespace gz::sensors;
 
@@ -47,6 +49,10 @@ class gz::sensors::GpuLidarSensorPrivate
   /// \brief Fill the point cloud packed message
   /// \param[in] _laserBuffer Lidar data buffer.
   public: void FillPointCloudMsg(const float *_laserBuffer);
+
+  /// \brief Fill point cloud message using pattern scanning
+  /// \param[in] _laserBuffer Lidar data buffer.
+  public: void FillPointCloudMsgWithPattern(const float *_laserBuffer);
 
   /// \brief Rendering camera
   public: gz::rendering::GpuRaysPtr gpuRays;
@@ -73,7 +79,7 @@ class gz::sensors::GpuLidarSensorPrivate
   /// \brief Publisher for the publish point cloud message.
   public: gz::transport::Node::Publisher pointPub;
 
-  // NEW: Pattern scanning data
+  // Pattern scanning data
   /// \brief Multi-frame scanning pattern loaded from CSV
   public: std::vector<std::vector<GpuLidarSensor::ScanPoint>> multiFramePattern;
   
@@ -91,12 +97,16 @@ class gz::sensors::GpuLidarSensorPrivate
   
   /// \brief Pattern update rate (Hz) - should match your 10Hz requirement
   public: double patternUpdateRate = 10.0;
+
+  /// \brief Reference to parent sensor for accessing protected methods
+  public: GpuLidarSensor* parentSensor = nullptr;
 };
 
 //////////////////////////////////////////////////
 GpuLidarSensor::GpuLidarSensor()
   : dataPtr(new GpuLidarSensorPrivate())
 {
+  this->dataPtr->parentSensor = this;
 }
 
 //////////////////////////////////////////////////
@@ -141,7 +151,6 @@ void GpuLidarSensor::RemoveGpuRays(
 }
 
 //////////////////////////////////////////////////
-//////////////////////////////////////////////////
 bool GpuLidarSensor::Load(const sdf::Sensor &_sdf)
 {
   // Check if this is being loaded via "builtin" or via another sensor
@@ -150,7 +159,7 @@ bool GpuLidarSensor::Load(const sdf::Sensor &_sdf)
     return false;
   }
 
-  // NEW: Check for pattern_file_path with multiple fallback approaches
+  // Pattern scanning configuration - check for pattern_file_path
   bool patternFound = false;
   
   // Approach 1: Check main sensor element (preferred)
@@ -190,48 +199,41 @@ bool GpuLidarSensor::Load(const sdf::Sensor &_sdf)
     }
   }
   
-  // Approach 3: Debug - list all available elements
-  if (!patternFound)
+  // Check for pattern_update_rate if pattern was found
+  if (patternFound && sensorElement && sensorElement->HasElement("pattern_update_rate"))
   {
-    gzdbg << "[GpuLidarSensor] pattern_file_path not found. Debugging available elements:" << std::endl;
-    
-    if (sensorElement)
-    {
-      gzdbg << "[GpuLidarSensor] Main sensor element exists" << std::endl;
-      
-      // List all child elements for debugging
-      sdf::ElementPtr child = sensorElement->GetFirstElement();
-      while (child)
-      {
-        gzdbg << "[GpuLidarSensor] Found child element: " << child->GetName() << std::endl;
-        child = child->GetNextElement();
-      }
-    }
-    else
-    {
-      gzdbg << "[GpuLidarSensor] Main sensor element is null" << std::endl;
-    }
-    
-    gzdbg << "[GpuLidarSensor] No pattern_file_path found - using standard scanning mode" << std::endl;
+    this->dataPtr->patternUpdateRate = sensorElement->Get<double>("pattern_update_rate");
+    gzdbg << "[GpuLidarSensor] Pattern update rate set to: " 
+          << this->dataPtr->patternUpdateRate << " Hz" << std::endl;
   }
   
   // If pattern was found, try to load it
   if (patternFound)
   {
-    gzdbg << "[GpuLidarSensor] Attempting to load scanning pattern from: " 
+    gzmsg << "[GpuLidarSensor] ==> PATTERN SCANNING MODE DETECTED <==" << std::endl;
+    gzmsg << "[GpuLidarSensor] Attempting to load scanning pattern from: " 
           << this->dataPtr->patternFilePath << std::endl;
     
     if (this->LoadScanningPattern(this->dataPtr->patternFilePath))
     {
       this->dataPtr->patternScanningEnabled = true;
-      gzdbg << "[GpuLidarSensor] Pattern scanning enabled with " 
+      gzmsg << "[GpuLidarSensor] ✓ PATTERN SCANNING ENABLED!" << std::endl;
+      gzmsg << "[GpuLidarSensor] ✓ Loaded " 
             << this->dataPtr->multiFramePattern.size() << " frames" << std::endl;
+      gzmsg << "[GpuLidarSensor] ✓ Pattern update rate: " 
+            << this->dataPtr->patternUpdateRate << " Hz" << std::endl;
     }
     else
     {
-      gzerr << "[GpuLidarSensor] Failed to load pattern file, falling back to standard scanning" << std::endl;
+      gzerr << "[GpuLidarSensor] ✗ Failed to load pattern file!" << std::endl;
+      gzerr << "[GpuLidarSensor] ✗ Falling back to standard scanning mode" << std::endl;
       this->dataPtr->patternScanningEnabled = false;
     }
+  }
+  else
+  {
+    gzdbg << "[GpuLidarSensor] No pattern_file_path found - using standard scanning mode" << std::endl;
+    this->dataPtr->patternScanningEnabled = false;
   }
 
   // Initialize the point message.
@@ -314,9 +316,26 @@ bool GpuLidarSensor::CreateLidar()
   this->dataPtr->gpuRays->SetVerticalAngleMax(
       this->VerticalAngleMax().Radian());
 
-  this->dataPtr->gpuRays->SetRayCount(this->RayCount());
-  this->dataPtr->gpuRays->SetVerticalRayCount(
-      this->VerticalRayCount());
+  // For pattern scanning, we might want higher resolution to capture all pattern points
+  if (this->dataPtr->patternScanningEnabled)
+  {
+    // Use higher resolution for better pattern coverage
+    // You might want to adjust these values based on your pattern density
+    unsigned int patternRayCount = std::max(this->RayCount(), static_cast<unsigned int>(720));
+    unsigned int patternVerticalRayCount = std::max(this->VerticalRayCount(), static_cast<unsigned int>(180));
+    
+    this->dataPtr->gpuRays->SetRayCount(patternRayCount);
+    this->dataPtr->gpuRays->SetVerticalRayCount(patternVerticalRayCount);
+    
+    gzdbg << "[GpuLidarSensor] Pattern mode - using enhanced resolution: " 
+          << patternRayCount << "x" << patternVerticalRayCount << std::endl;
+  }
+  else
+  {
+    this->dataPtr->gpuRays->SetRayCount(this->RayCount());
+    this->dataPtr->gpuRays->SetVerticalRayCount(this->VerticalRayCount());
+  }
+
   this->dataPtr->gpuRays->SetLocalPose(this->Pose());
 
   this->Scene()->RootVisual()->AddChild(
@@ -380,18 +399,17 @@ bool GpuLidarSensor::Update(const std::chrono::steady_clock::duration &_now)
     return false;
   }
 
-  // NEW: Handle pattern-based scanning
-  if (this->dataPtr->patternScanningEnabled)
+  // Handle pattern-based scanning
+  if (this->dataPtr->patternScanningEnabled && !this->dataPtr->multiFramePattern.empty())
   {
-    gzdbg << "[GpuLidarSensor] >>> patternScanningEnabled " << std::endl;
-    // Check if it's time to advance to next frame (10Hz)
+    // Check if it's time to advance to next frame
     auto timeSinceLastUpdate = _now - this->dataPtr->lastPatternUpdate;
     auto updateInterval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
         std::chrono::duration<double>(1.0 / this->dataPtr->patternUpdateRate));
     
     if (timeSinceLastUpdate >= updateInterval)
     {
-      // Advance to next pattern frame (efficient - just increment index!)
+      // Advance to next pattern frame
       this->dataPtr->currentPatternFrame = 
           (this->dataPtr->currentPatternFrame + 1) % this->dataPtr->multiFramePattern.size();
       
@@ -404,25 +422,7 @@ bool GpuLidarSensor::Update(const std::chrono::steady_clock::duration &_now)
               << this->dataPtr->currentPatternFrame 
               << " (total: " << this->dataPtr->multiFramePattern.size() << ")" << std::endl;
       }
-    } else
-
-    // Here you would modify the GPU rays configuration based on current pattern
-    // The GetCurrentFramePattern() returns a const reference for efficiency
-    const auto& currentFrame = this->GetCurrentFramePattern();
-    
-    // TODO: Apply the current frame pattern to GPU rays
-    // This is where you'd configure the GpuRays object to use the specific
-    // theta/phi angles from the current frame
-    // Example (you'll need to implement the actual ray configuration):
-    /*
-    if (!currentFrame.empty())
-    {
-      // Configure GPU rays to match pattern
-      // this->dataPtr->gpuRays->SetCustomAngles(currentFrame);
     }
-    */
-  } else {
-    gzdbg << "[GpuLidarSensor] >>> not patternScanningEnabled " << std::endl;
   }
 
   this->Render();
@@ -451,7 +451,15 @@ bool GpuLidarSensor::Update(const std::chrono::steady_clock::duration &_now)
       }
     }
 
-    this->dataPtr->FillPointCloudMsg(this->laserBuffer);
+    // Use pattern-based or standard point cloud generation
+    if (this->dataPtr->patternScanningEnabled)
+    {
+      this->dataPtr->FillPointCloudMsgWithPattern(this->laserBuffer);
+    }
+    else
+    {
+      this->dataPtr->FillPointCloudMsg(this->laserBuffer);
+    }
 
     {
       this->AddSequence(this->dataPtr->pointMsg.mutable_header());
@@ -504,8 +512,233 @@ bool GpuLidarSensor::HasConnections() const
 }
 
 //////////////////////////////////////////////////
+bool GpuLidarSensor::IsPatternScanningEnabled() const
+{
+  return this->dataPtr->patternScanningEnabled;
+}
+
+//////////////////////////////////////////////////
+bool GpuLidarSensor::LoadScanningPattern(const std::string &_patternFilePath)
+{
+  gzmsg << "[GpuLidarSensor] ======================================" << std::endl;
+  gzmsg << "[GpuLidarSensor] LOADING SCANNING PATTERN" << std::endl;
+  gzmsg << "[GpuLidarSensor] ======================================" << std::endl;
+  gzmsg << "[GpuLidarSensor] File path: " << _patternFilePath << std::endl;
+  
+  std::ifstream file(_patternFilePath);
+  if (!file.is_open()) 
+  {
+    gzerr << "[GpuLidarSensor] ✗ Could not open pattern file: " << _patternFilePath << std::endl;
+    return false;
+  }
+
+  gzdbg << "[GpuLidarSensor] ✓ File opened successfully, parsing CSV..." << std::endl;
+
+  std::string line;
+  std::map<int, std::vector<ScanPoint>> frameMap;
+  int lineNumber = 0;
+  int successfulParses = 0;
+  int failedParses = 0;
+  int totalPointsLoaded = 0;
+
+  // Read and process each line
+  while (std::getline(file, line)) 
+  {
+    lineNumber++;
+    
+    // Trim whitespace
+    line.erase(0, line.find_first_not_of(" \t\r\n"));
+    line.erase(line.find_last_not_of(" \t\r\n") + 1);
+    
+    // Skip empty lines and header
+    if (line.empty() || line.find("frame_id") != std::string::npos) 
+    {
+      if (lineNumber <= 5) // Log first few skips
+      {
+        gzdbg << "[GpuLidarSensor] Skipping line " << lineNumber << ": " << line << std::endl;
+      }
+      continue;
+    }
+
+    // Parse CSV line: frame_id,theta,phi,time
+    std::stringstream ss(line);
+    std::string item;
+    std::vector<std::string> tokens;
+    
+    while (std::getline(ss, item, ',')) 
+    {
+      // Trim each token
+      item.erase(0, item.find_first_not_of(" \t"));
+      item.erase(item.find_last_not_of(" \t") + 1);
+      tokens.push_back(item);
+    }
+
+    if (tokens.size() != 4) 
+    {
+      failedParses++;
+      if (failedParses <= 5) // Log first few failures
+      {
+        gzwarn << "[GpuLidarSensor] Line " << lineNumber 
+               << " - Expected 4 columns, got " << tokens.size() 
+               << " (" << line << ")" << std::endl;
+      }
+      continue;
+    }
+
+    try 
+    {
+      int frameId = std::stoi(tokens[0]);
+      double theta = std::stod(tokens[1]);
+      double phi = std::stod(tokens[2]);
+      double time = std::stod(tokens[3]);
+
+      // Validate angles (basic sanity check)
+      if (std::abs(theta) > 2*M_PI || std::abs(phi) > M_PI)
+      {
+        failedParses++;
+        if (failedParses <= 5)
+        {
+          gzwarn << "[GpuLidarSensor] Line " << lineNumber 
+                 << " - Invalid angles: theta=" << theta << ", phi=" << phi << std::endl;
+        }
+        continue;
+      }
+
+      ScanPoint point = {theta, phi, time};
+      frameMap[frameId].push_back(point);
+      successfulParses++;
+      totalPointsLoaded++;
+      
+      // Log first few successful parses
+      if (successfulParses <= 5)
+      {
+        gzdbg << "[GpuLidarSensor] ✓ Parsed line " << lineNumber 
+              << ": frame=" << frameId << ", theta=" << theta 
+              << ", phi=" << phi << ", time=" << time << std::endl;
+      }
+      
+    } 
+    catch (const std::exception &e) 
+    {
+      failedParses++;
+      if (failedParses <= 5)
+      {
+        gzwarn << "[GpuLidarSensor] Parse error on line " << lineNumber 
+               << ": " << e.what() << " (" << line << ")" << std::endl;
+      }
+    }
+  }
+
+  file.close();
+
+  if (frameMap.empty()) 
+  {
+    gzerr << "[GpuLidarSensor] ✗ No valid data found in pattern file" << std::endl;
+    return false;
+  }
+
+  // Convert map to vector for efficient access
+  this->dataPtr->multiFramePattern.clear();
+  this->dataPtr->multiFramePattern.reserve(frameMap.size());
+  
+  // Calculate statistics
+  int minPointsPerFrame = INT_MAX;
+  int maxPointsPerFrame = 0;
+  
+  for (const auto &framePair : frameMap) 
+  {
+    this->dataPtr->multiFramePattern.push_back(framePair.second);
+    int frameSize = framePair.second.size();
+    minPointsPerFrame = std::min(minPointsPerFrame, frameSize);
+    maxPointsPerFrame = std::max(maxPointsPerFrame, frameSize);
+    
+    // Log first few frames
+    if (framePair.first < 5)
+    {
+      gzdbg << "[GpuLidarSensor] Frame " << framePair.first 
+            << " contains " << frameSize << " points" << std::endl;
+    }
+  }
+
+  // Final statistics
+  gzmsg << "[GpuLidarSensor] ======================================" << std::endl;
+  gzmsg << "[GpuLidarSensor] PATTERN LOADING COMPLETE!" << std::endl;
+  gzmsg << "[GpuLidarSensor] ======================================" << std::endl;
+  gzmsg << "[GpuLidarSensor] ✓ Total lines processed: " << lineNumber << std::endl;
+  gzmsg << "[GpuLidarSensor] ✓ Successful parses: " << successfulParses << std::endl;
+  gzmsg << "[GpuLidarSensor] ✓ Failed parses: " << failedParses << std::endl;
+  gzmsg << "[GpuLidarSensor] ✓ Total frames loaded: " << this->dataPtr->multiFramePattern.size() << std::endl;
+  gzmsg << "[GpuLidarSensor] ✓ Total points loaded: " << totalPointsLoaded << std::endl;
+  gzmsg << "[GpuLidarSensor] ✓ Points per frame - Min: " << minPointsPerFrame 
+        << ", Max: " << maxPointsPerFrame 
+        << ", Avg: " << (totalPointsLoaded / this->dataPtr->multiFramePattern.size()) << std::endl;
+  gzmsg << "[GpuLidarSensor] ✓ Pattern update rate: " << this->dataPtr->patternUpdateRate << " Hz" << std::endl;
+  
+  if (failedParses > 0)
+  {
+    gzwarn << "[GpuLidarSensor] ⚠ " << failedParses << " lines failed to parse (see details above)" << std::endl;
+  }
+  
+  gzmsg << "[GpuLidarSensor] ======================================" << std::endl;
+
+  return true;
+}
+
+//////////////////////////////////////////////////
+const std::vector<GpuLidarSensor::ScanPoint>& GpuLidarSensor::GetCurrentFramePattern() const
+{
+  // Return reference to current frame for efficient access (no copying!)
+  if (this->dataPtr->multiFramePattern.empty())
+  {
+    static const std::vector<ScanPoint> emptyPattern;
+    return emptyPattern;
+  }
+  
+  return this->dataPtr->multiFramePattern[this->dataPtr->currentPatternFrame];
+}
+
+//////////////////////////////////////////////////
+bool GpuLidarSensor::PatternAnglesToIndices(double _theta, double _phi, 
+                                           unsigned int &_rayIndex, 
+                                           unsigned int &_verticalIndex) const
+{
+  if (!this->dataPtr->gpuRays)
+    return false;
+
+  // Convert pattern angles to GPU ray grid indices
+  double angleMin = this->dataPtr->gpuRays->AngleMin().Radian();
+  double angleMax = this->dataPtr->gpuRays->AngleMax().Radian();
+  double verticalAngleMin = this->dataPtr->gpuRays->VerticalAngleMin().Radian();
+  double verticalAngleMax = this->dataPtr->gpuRays->VerticalAngleMax().Radian();
+  
+  unsigned int rayCount = this->dataPtr->gpuRays->RangeCount();
+  unsigned int verticalRayCount = this->dataPtr->gpuRays->VerticalRangeCount();
+
+  // Check if angles are within sensor FOV
+  if (_theta < angleMin || _theta > angleMax || 
+      _phi < verticalAngleMin || _phi > verticalAngleMax)
+  {
+    return false;
+  }
+
+  // Calculate indices
+  double horizontalRatio = (_theta - angleMin) / (angleMax - angleMin);
+  double verticalRatio = (_phi - verticalAngleMin) / (verticalAngleMax - verticalAngleMin);
+  
+  _rayIndex = static_cast<unsigned int>(horizontalRatio * (rayCount - 1));
+  _verticalIndex = static_cast<unsigned int>(verticalRatio * (verticalRayCount - 1));
+  
+  // Ensure indices are within bounds
+  _rayIndex = std::min(_rayIndex, rayCount - 1);
+  _verticalIndex = std::min(_verticalIndex, verticalRayCount - 1);
+
+  return true;
+}
+
+//////////////////////////////////////////////////
 void GpuLidarSensorPrivate::FillPointCloudMsg(const float *_laserBuffer)
 {
+  // Original standard scanning implementation
   GZ_PROFILE("GpuLidarSensorPrivate::FillPointCloudMsg");
   uint32_t width = this->pointMsg.width();
   uint32_t height = this->pointMsg.height();
@@ -577,134 +810,104 @@ void GpuLidarSensorPrivate::FillPointCloudMsg(const float *_laserBuffer)
   this->pointMsg.set_is_dense(isDense);
 }
 
-// NEW: Pattern scanning methods
 //////////////////////////////////////////////////
-bool GpuLidarSensor::LoadScanningPattern(const std::string &_patternFilePath)
+void GpuLidarSensorPrivate::FillPointCloudMsgWithPattern(const float *_laserBuffer)
 {
-  gzdbg << "[GpuLidarSensor] Starting to load scanning pattern from: " 
-        << _patternFilePath << std::endl;
+  // Pattern-based scanning implementation
+  GZ_PROFILE("GpuLidarSensorPrivate::FillPointCloudMsgWithPattern");
   
-  std::ifstream file(_patternFilePath);
-  if (!file.is_open()) 
+  if (!this->parentSensor || this->multiFramePattern.empty())
   {
-    gzerr << "[GpuLidarSensor] Could not open pattern file: " << _patternFilePath << std::endl;
-    return false;
+    // Fallback to standard scanning
+    this->FillPointCloudMsg(_laserBuffer);
+    return;
   }
 
-  gzdbg << "[GpuLidarSensor] File opened successfully, parsing CSV..." << std::endl;
+  const auto& currentFrame = this->multiFramePattern[this->currentPatternFrame];
+  
+  uint32_t width = this->pointMsg.width();
+  uint32_t height = this->pointMsg.height();
+  unsigned int channels = 3;
 
-  std::string line;
-  std::map<int, std::vector<ScanPoint>> frameMap;
-  int lineNumber = 0;
-  int successfulParses = 0;
-  int failedParses = 0;
+  // Prepare output buffer
+  std::string *msgBuffer = this->pointMsg.mutable_data();
+  msgBuffer->clear();
+  msgBuffer->reserve(currentFrame.size() * this->pointMsg.point_step());
+  
+  bool isDense = true;
+  int validPoints = 0;
 
-  // Read and process each line
-  while (std::getline(file, line)) 
+  // Process each point in the current pattern frame
+  for (const auto& patternPoint : currentFrame)
   {
-    lineNumber++;
+    unsigned int rayIndex, verticalIndex;
     
-    // Trim whitespace
-    line.erase(0, line.find_first_not_of(" \t\r\n"));
-    line.erase(line.find_last_not_of(" \t\r\n") + 1);
+    // Convert pattern angles to GPU ray grid indices
+    if (!this->parentSensor->PatternAnglesToIndices(patternPoint.theta, patternPoint.phi, 
+                                                   rayIndex, verticalIndex))
+    {
+      // Point is outside sensor FOV
+      continue;
+    }
+
+    // Calculate buffer index for this ray
+    auto index = verticalIndex * width * channels + rayIndex * channels;
     
-    // Skip empty lines and header
-    if (line.empty() || line.find("frame_id") != std::string::npos) 
+    // Bounds check
+    if (index + 2 >= width * height * channels)
     {
       continue;
     }
 
-    // Parse CSV line: frame_id,theta,phi,time
-    std::stringstream ss(line);
-    std::string item;
-    std::vector<std::string> tokens;
+    float depth = _laserBuffer[index];
     
-    while (std::getline(ss, item, ',')) 
+    // Validate depth
+    if (std::isinf(depth) || std::isnan(depth))
     {
-      // Trim each token
-      item.erase(0, item.find_first_not_of(" \t"));
-      item.erase(item.find_last_not_of(" \t") + 1);
-      tokens.push_back(item);
-    }
-
-    if (tokens.size() != 4) 
-    {
-      failedParses++;
-      if (failedParses < 10) // Log first few failures
-      {
-        gzwarn << "[GpuLidarSensor] Line " << lineNumber 
-               << " - Expected 4 columns, got " << tokens.size() << std::endl;
-      }
+      isDense = false;
       continue;
     }
 
-    try 
-    {
-      int frameId = std::stoi(tokens[0]);
-      double theta = std::stod(tokens[1]);
-      double phi = std::stod(tokens[2]);
-      double time = std::stod(tokens[3]);
+    // Convert spherical coordinates to Cartesian
+    float pointX = depth * cosf(patternPoint.phi) * cosf(patternPoint.theta);
+    float pointY = depth * cosf(patternPoint.phi) * sinf(patternPoint.theta);
+    float pointZ = depth * sinf(patternPoint.phi);
 
-      ScanPoint point = {theta, phi, time};
-      frameMap[frameId].push_back(point);
-      successfulParses++;
-      
-    } 
-    catch (const std::exception &e) 
-    {
-      failedParses++;
-      if (failedParses < 10)
-      {
-        gzwarn << "[GpuLidarSensor] Parse error on line " << lineNumber 
-               << ": " << e.what() << std::endl;
-      }
-    }
+    // Get intensity and set ring
+    float intensity = _laserBuffer[index + 1];
+    uint16_t ring = static_cast<uint16_t>(verticalIndex);
+
+    // Append point data to buffer
+    size_t currentPos = msgBuffer->size();
+    msgBuffer->resize(currentPos + this->pointMsg.point_step());
+    char *msgBufferIndex = msgBuffer->data() + currentPos;
+
+    memcpy(msgBufferIndex, &pointX, sizeof(pointX));
+    msgBufferIndex += sizeof(pointX);
+    memcpy(msgBufferIndex, &pointY, sizeof(pointY));
+    msgBufferIndex += sizeof(pointY);
+    memcpy(msgBufferIndex, &pointZ, sizeof(pointZ));
+    msgBufferIndex += sizeof(pointZ);
+    memcpy(msgBufferIndex, &intensity, sizeof(intensity));
+    msgBufferIndex += sizeof(intensity);
+    memcpy(msgBufferIndex, &ring, sizeof(ring));
+
+    validPoints++;
   }
 
-  file.close();
+  // Update point cloud dimensions
+  this->pointMsg.set_width(validPoints);
+  this->pointMsg.set_height(1);  // Single row for pattern-based scanning
+  this->pointMsg.set_row_step(this->pointMsg.point_step() * validPoints);
+  this->pointMsg.set_is_dense(isDense);
 
-  if (frameMap.empty()) 
+  // Log occasionally for debugging
+  static int frameCounter = 0;
+  frameCounter++;
+  if (frameCounter % 100 == 0)
   {
-    gzerr << "[GpuLidarSensor] No valid data found in pattern file" << std::endl;
-    return false;
+    gzdbg << "[GpuLidarSensor] Pattern frame " << this->currentPatternFrame 
+          << ": " << validPoints << " valid points from " << currentFrame.size() 
+          << " pattern points" << std::endl;
   }
-
-  // Convert map to vector for efficient access
-  this->dataPtr->multiFramePattern.clear();
-  this->dataPtr->multiFramePattern.reserve(frameMap.size());
-  
-  for (const auto &framePair : frameMap) 
-  {
-    this->dataPtr->multiFramePattern.push_back(framePair.second);
-  }
-
-  gzdbg << "[GpuLidarSensor] ✓ Pattern loading COMPLETE!" << std::endl;
-  gzdbg << "[GpuLidarSensor]   - Processed lines: " << lineNumber << std::endl;
-  gzdbg << "[GpuLidarSensor]   - Successful parses: " << successfulParses << std::endl;
-  gzdbg << "[GpuLidarSensor]   - Failed parses: " << failedParses << std::endl;
-  gzdbg << "[GpuLidarSensor]   - Total frames: " << this->dataPtr->multiFramePattern.size() << std::endl;
-  gzdbg << "[GpuLidarSensor]   - Average points per frame: " 
-        << (this->dataPtr->multiFramePattern.empty() ? 0 : 
-            successfulParses / this->dataPtr->multiFramePattern.size()) << std::endl;
-
-  return true;
-}
-
-//////////////////////////////////////////////////
-const std::vector<GpuLidarSensor::ScanPoint>& GpuLidarSensor::GetCurrentFramePattern() const
-{
-  // Return reference to current frame for efficient access (no copying!)
-  if (this->dataPtr->multiFramePattern.empty())
-  {
-    static const std::vector<ScanPoint> emptyPattern;
-    return emptyPattern;
-  }
-  
-  return this->dataPtr->multiFramePattern[this->dataPtr->currentPatternFrame];
-}
-
-//////////////////////////////////////////////////
-bool GpuLidarSensor::IsPatternScanningEnabled() const
-{
-  return this->dataPtr->patternScanningEnabled;
 }
