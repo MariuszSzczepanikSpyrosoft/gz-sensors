@@ -895,16 +895,21 @@ void GpuLidarSensorPrivate::FillPointCloudMsgWithPattern(const float *_laserBuff
   
   if (!this->parentSensor || this->multiFramePattern.empty())
   {
-    // Fallback to standard scanning
+    gzwarn << "[DEBUG] Fallback to standard scanning - no pattern or parent" << std::endl;
     this->FillPointCloudMsg(_laserBuffer);
     return;
   }
 
   const auto& currentFrame = this->multiFramePattern[this->currentPatternFrame];
   
-  uint32_t width = this->pointMsg.width();
-  uint32_t height = this->pointMsg.height();
+  uint32_t width = this->gpuRays->RangeCount();
+  uint32_t height = this->gpuRays->VerticalRangeCount();
   unsigned int channels = 3;
+
+  gzdbg << "[DEBUG] Processing frame " << this->currentPatternFrame 
+        << " with " << currentFrame.size() << " pattern points" << std::endl;
+  gzdbg << "[DEBUG] GPU buffer dimensions: " << width << "x" << height 
+        << " channels=" << channels << std::endl;
 
   // Prepare output buffer
   std::string *msgBuffer = this->pointMsg.mutable_data();
@@ -913,34 +918,89 @@ void GpuLidarSensorPrivate::FillPointCloudMsgWithPattern(const float *_laserBuff
   
   bool isDense = true;
   int validPoints = 0;
+  int rejectedOutsideFOV = 0;
+  int rejectedBounds = 0;
+  int rejectedInvalidDepth = 0;
+
+  // Sample first few points for debugging
+  static bool firstTime = true;
+  if (firstTime)
+  {
+    firstTime = false;
+    gzmsg << "[DEBUG] First 5 pattern points:" << std::endl;
+    for (size_t i = 0; i < std::min(size_t(5), currentFrame.size()); ++i)
+    {
+      gzmsg << "  Point " << i << ": theta=" << currentFrame[i].theta 
+            << ", phi=" << currentFrame[i].phi 
+            << ", time=" << currentFrame[i].time << std::endl;
+    }
+  }
 
   // Process each point in the current pattern frame
-  for (const auto& patternPoint : currentFrame)
+  for (size_t pointIdx = 0; pointIdx < currentFrame.size(); ++pointIdx)
   {
+    const auto& patternPoint = currentFrame[pointIdx];
     unsigned int rayIndex, verticalIndex;
     
     // Convert pattern angles to GPU ray grid indices
     if (!this->PatternAnglesToIndices(patternPoint.theta, patternPoint.phi, rayIndex, verticalIndex))
     {
-      // Point is outside sensor FOV
+      rejectedOutsideFOV++;
       continue;
+    }
+
+    // DETAILED DEBUGGING: Log first few successful conversions
+    if (validPoints < 5)
+    {
+      gzmsg << "[DEBUG ACCEPTED] Point " << pointIdx << ": theta=" << patternPoint.theta 
+            << " phi=" << patternPoint.phi << " -> indices=[" << rayIndex << "," << verticalIndex << "]" << std::endl;
     }
 
     // Calculate buffer index for this ray
     auto index = verticalIndex * width * channels + rayIndex * channels;
     
+    // DETAILED DEBUGGING: Log index calculation
+    if (validPoints < 5)
+    {
+      gzmsg << "[DEBUG INDEX] verticalIndex=" << verticalIndex << " * width=" << width 
+            << " * channels=" << channels << " + rayIndex=" << rayIndex 
+            << " * channels=" << channels << " = " << index << std::endl;
+      gzmsg << "[DEBUG BOUNDS] index=" << index << " + 2 = " << (index + 2) 
+            << " vs max=" << (width * height * channels) << std::endl;
+    }
+    
     // Bounds check
     if (index + 2 >= width * height * channels)
     {
+      rejectedBounds++;
+      if (rejectedBounds < 5)
+      {
+        gzwarn << "[DEBUG] Bounds error: index=" << index 
+               << ", max=" << (width * height * channels - 3)
+               << ", ray=[" << rayIndex << "," << verticalIndex << "]" << std::endl;
+        gzwarn << "[DEBUG] Buffer size: " << (width * height * channels) 
+               << ", required: " << (index + 3) << std::endl;
+      }
       continue;
     }
 
     float depth = _laserBuffer[index];
+    // Log depth values
+    if (validPoints < 5)
+    {
+      float intensity_debug = _laserBuffer[index + 1];
+      gzmsg << "[DEBUG DEPTH] depth=" << depth << " intensity=" << intensity_debug << std::endl;
+    }
     
     // Validate depth
     if (std::isinf(depth) || std::isnan(depth))
     {
+      rejectedInvalidDepth++;
       isDense = false;
+      if (rejectedInvalidDepth < 5)
+      {
+        gzwarn << "[DEBUG] Invalid depth at index " << index << ": depth=" << depth << std::endl;
+      }
       continue;
     }
 
@@ -977,14 +1037,17 @@ void GpuLidarSensorPrivate::FillPointCloudMsgWithPattern(const float *_laserBuff
   this->pointMsg.set_row_step(this->pointMsg.point_step() * validPoints);
   this->pointMsg.set_is_dense(isDense);
 
-  // Log occasionally for debugging
+  // Detailed logging for debugging
   static int frameCounter = 0;
   frameCounter++;
-  if (frameCounter % 100 == 0)
+  if (frameCounter % 10 == 0 || validPoints == 0) // Log more frequently when debugging
   {
-    gzdbg << "[GpuLidarSensor] Pattern frame " << this->currentPatternFrame 
+    gzmsg << "[DEBUG] Pattern frame " << this->currentPatternFrame 
           << ": " << validPoints << " valid points from " << currentFrame.size() 
           << " pattern points" << std::endl;
+    gzmsg << "[DEBUG] Rejections: FOV=" << rejectedOutsideFOV 
+          << ", Bounds=" << rejectedBounds 
+          << ", InvalidDepth=" << rejectedInvalidDepth << std::endl;
   }
 }
 
@@ -1005,10 +1068,31 @@ bool GpuLidarSensorPrivate::PatternAnglesToIndices(double _theta, double _phi,
   unsigned int rayCount = this->gpuRays->RangeCount();
   unsigned int verticalRayCount = this->gpuRays->VerticalRangeCount();
 
+  // DEBUG: Log sensor FOV and pattern point (first few times)
+  static int debugCounter = 0;
+  if (debugCounter < 10)
+  {
+    debugCounter++;
+    gzmsg << "[DEBUG] Sensor FOV: theta=[" << angleMin << " to " << angleMax 
+          << "], phi=[" << verticalAngleMin << " to " << verticalAngleMax << "]" << std::endl;
+    gzmsg << "[DEBUG] Pattern point: theta=" << _theta << ", phi=" << _phi << std::endl;
+    gzmsg << "[DEBUG] Ray counts: " << rayCount << "x" << verticalRayCount << std::endl;
+  }
+
   // Check if angles are within sensor FOV
   if (_theta < angleMin || _theta > angleMax || 
       _phi < verticalAngleMin || _phi > verticalAngleMax)
   {
+    // DEBUG: Log why point was rejected
+    static int rejectedCounter = 0;
+    if (rejectedCounter < 10)
+    {
+      rejectedCounter++;
+      gzwarn << "[DEBUG] Point REJECTED: theta=" << _theta 
+             << " (range: " << angleMin << " to " << angleMax << "), "
+             << "phi=" << _phi 
+             << " (range: " << verticalAngleMin << " to " << verticalAngleMax << ")" << std::endl;
+    }
     return false;
   }
 
@@ -1022,6 +1106,13 @@ bool GpuLidarSensorPrivate::PatternAnglesToIndices(double _theta, double _phi,
   // Ensure indices are within bounds
   _rayIndex = std::min(_rayIndex, rayCount - 1);
   _verticalIndex = std::min(_verticalIndex, verticalRayCount - 1);
+
+  // DEBUG: Log successful conversion
+  if (debugCounter < 10)
+  {
+    gzmsg << "[DEBUG] Point ACCEPTED: indices=[" << _rayIndex << "," << _verticalIndex 
+          << "], ratios=[" << horizontalRatio << "," << verticalRatio << "]" << std::endl;
+  }
 
   return true;
 }
