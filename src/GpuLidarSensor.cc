@@ -169,43 +169,113 @@ bool GpuLidarSensor::Load(const sdf::Sensor &_sdf)
     return false;
   }
 
-  // Pattern scanning configuration - check for pattern_file_path
+  gzmsg << "[GpuLidarSensor] ======================================" << std::endl;
+  gzmsg << "[GpuLidarSensor] SDF PATTERN FILE PATH DETECTION" << std::endl;
+  gzmsg << "[GpuLidarSensor] ======================================" << std::endl;
+  
   bool patternFound = false;
   
   // Approach 1: Check main sensor element (preferred)
   sdf::ElementPtr sensorElement = _sdf.Element();
   if (sensorElement)
   {
-    gzdbg << "[GpuLidarSensor] Checking main sensor element for pattern_file_path..." << std::endl;
+    gzmsg << "[GpuLidarSensor] ✓ Main sensor element exists" << std::endl;
     
-    if (sensorElement->HasElement("pattern_file_path"))
+    // List all child elements for debugging
+    gzmsg << "[GpuLidarSensor] Available child elements:" << std::endl;
+    sdf::ElementPtr child = sensorElement->GetFirstElement();
+    int elementCount = 0;
+    while (child)
     {
-      this->dataPtr->patternFilePath = sensorElement->Get<std::string>("pattern_file_path");
-      patternFound = true;
-      gzdbg << "[GpuLidarSensor] Found pattern_file_path in main sensor element: " 
-            << this->dataPtr->patternFilePath << std::endl;
+      elementCount++;
+      std::string name = child->GetName();
+      gzmsg << "[GpuLidarSensor]   " << elementCount << ". '" << name << "'" << std::endl;
+      child = child->GetNextElement();
     }
+    
+    // Try multiple variants of the element name
+    std::vector<std::string> patternElementNames = {
+      "pattern_file_path",
+      "gz:pattern_file_path", 
+      "gazebo:pattern_file_path",
+      "lidar_pattern_file_path"
+    };
+    
+    for (const auto& elementName : patternElementNames)
+    {
+      gzmsg << "[GpuLidarSensor] Checking for element: '" << elementName << "'" << std::endl;
+      
+      if (sensorElement->HasElement(elementName))
+      {
+        this->dataPtr->patternFilePath = sensorElement->Get<std::string>(elementName);
+        patternFound = true;
+        gzmsg << "[GpuLidarSensor] ✓ Found pattern_file_path in main sensor element" << std::endl;
+        gzmsg << "[GpuLidarSensor] ✓ Element name: '" << elementName << "'" << std::endl;
+        gzmsg << "[GpuLidarSensor] ✓ File path: '" << this->dataPtr->patternFilePath << "'" << std::endl;
+        break;
+      }
+    }
+  }
+  else
+  {
+    gzwarn << "[GpuLidarSensor] ✗ Main sensor element is null!" << std::endl;
   }
   
   // Approach 2: Check inside lidar element (fallback)
   if (!patternFound)
   {
+    gzmsg << "[GpuLidarSensor] Checking lidar sub-element..." << std::endl;
+    
     auto lidarSdf = _sdf.LidarSensor();
     if (lidarSdf)
     {
       auto lidarElement = lidarSdf->Element();
       if (lidarElement)
       {
-        gzdbg << "[GpuLidarSensor] Checking lidar element for pattern_file_path..." << std::endl;
+        gzmsg << "[GpuLidarSensor] ✓ Lidar element exists" << std::endl;
         
-        if (lidarElement->HasElement("pattern_file_path"))
+        // List lidar child elements
+        gzmsg << "[GpuLidarSensor] Available lidar child elements:" << std::endl;
+        sdf::ElementPtr child = lidarElement->GetFirstElement();
+        int elementCount = 0;
+        while (child)
         {
-          this->dataPtr->patternFilePath = lidarElement->Get<std::string>("pattern_file_path");
-          patternFound = true;
-          gzdbg << "[GpuLidarSensor] Found pattern_file_path in lidar element: " 
-                << this->dataPtr->patternFilePath << std::endl;
+          elementCount++;
+          std::string name = child->GetName();
+          gzmsg << "[GpuLidarSensor]   " << elementCount << ". '" << name << "'" << std::endl;
+          child = child->GetNextElement();
+        }
+        
+        // Try multiple variants
+        std::vector<std::string> patternElementNames = {
+          "pattern_file_path",
+          "gz:pattern_file_path", 
+          "gazebo:pattern_file_path"
+        };
+        
+        for (const auto& elementName : patternElementNames)
+        {
+          gzmsg << "[GpuLidarSensor] Checking lidar for element: '" << elementName << "'" << std::endl;
+          
+          if (lidarElement->HasElement(elementName))
+          {
+            this->dataPtr->patternFilePath = lidarElement->Get<std::string>(elementName);
+            patternFound = true;
+            gzmsg << "[GpuLidarSensor] ✓ Found pattern_file_path in lidar element" << std::endl;
+            gzmsg << "[GpuLidarSensor] ✓ Element name: '" << elementName << "'" << std::endl;
+            gzmsg << "[GpuLidarSensor] ✓ File path: '" << this->dataPtr->patternFilePath << "'" << std::endl;
+            break;
+          }
         }
       }
+      else
+      {
+        gzwarn << "[GpuLidarSensor] ✗ Lidar element is null" << std::endl;
+      }
+    }
+    else
+    {
+      gzwarn << "[GpuLidarSensor] ✗ LidarSensor() returned null" << std::endl;
     }
   }
   
@@ -213,8 +283,44 @@ bool GpuLidarSensor::Load(const sdf::Sensor &_sdf)
   if (patternFound && sensorElement && sensorElement->HasElement("pattern_update_rate"))
   {
     this->dataPtr->patternUpdateRate = sensorElement->Get<double>("pattern_update_rate");
-    gzdbg << "[GpuLidarSensor] Pattern update rate set to: " 
+    gzmsg << "[GpuLidarSensor] ✓ Pattern update rate set to: " 
           << this->dataPtr->patternUpdateRate << " Hz" << std::endl;
+  }
+  
+  // Verify file exists if pattern was found
+  if (patternFound)
+  {
+    gzmsg << "[GpuLidarSensor] ======================================" << std::endl;
+    gzmsg << "[GpuLidarSensor] FILE EXISTENCE CHECK" << std::endl;
+    gzmsg << "[GpuLidarSensor] ======================================" << std::endl;
+    gzmsg << "[GpuLidarSensor] Checking file: '" << this->dataPtr->patternFilePath << "'" << std::endl;
+    
+    std::ifstream testFile(this->dataPtr->patternFilePath);
+    if (testFile.good())
+    {
+      testFile.close();
+      gzmsg << "[GpuLidarSensor] ✓ File exists and is readable" << std::endl;
+    }
+    else
+    {
+      gzerr << "[GpuLidarSensor] ✗ File does not exist or is not readable!" << std::endl;
+      gzerr << "[GpuLidarSensor] ✗ Full path: '" << this->dataPtr->patternFilePath << "'" << std::endl;
+      
+      // Try to give helpful suggestions
+      if (this->dataPtr->patternFilePath.front() != '/')
+      {
+        gzerr << "[GpuLidarSensor] ✗ Path appears to be relative. Consider using absolute path." << std::endl;
+      }
+      
+      patternFound = false; // Don't try to load non-existent file
+    }
+  }
+  else
+  {
+    gzmsg << "[GpuLidarSensor] ======================================" << std::endl;
+    gzmsg << "[GpuLidarSensor] NO PATTERN FILE SPECIFIED" << std::endl;
+    gzmsg << "[GpuLidarSensor] ======================================" << std::endl;
+    gzmsg << "[GpuLidarSensor] Using standard scanning mode" << std::endl;
   }
   
   // If pattern was found, try to load it
@@ -243,7 +349,6 @@ bool GpuLidarSensor::Load(const sdf::Sensor &_sdf)
   else
   {
     gzdbg << "[GpuLidarSensor] No pattern_file_path found - using standard scanning mode" << std::endl;
-    this->dataPtr->patternScanningEnabled = false;
   }
 
   // Initialize the point message.
