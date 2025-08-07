@@ -13,18 +13,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
-*/
+ */
 
 #include <algorithm>
 
 #if defined(_MSC_VER)
-  #pragma warning(push)
-  #pragma warning(disable: 4005)
-  #pragma warning(disable: 4251)
+#pragma warning(push)
+#pragma warning(disable : 4005)
+#pragma warning(disable : 4251)
 #endif
 #include <gz/msgs/laserscan.pb.h>
 #if defined(_MSC_VER)
-  #pragma warning(pop)
+#pragma warning(pop)
 #endif
 
 #include <gz/common/Console.hh>
@@ -46,27 +46,33 @@ using namespace gz::sensors;
 class gz::sensors::LidarPrivate
 {
   /// \brief node to create publisher
-  public: transport::Node node;
+public:
+  transport::Node node;
 
   /// \brief publisher to publish images
-  public: transport::Node::Publisher pub;
+public:
+  transport::Node::Publisher pub;
 
   /// \brief Laser message to publish data.
-  public: gz::msgs::LaserScan laserMsg;
+public:
+  gz::msgs::LaserScan laserMsg;
 
   /// \brief Noise added to sensor data
-  public: std::map<SensorNoiseType, NoisePtr> noises;
+public:
+  std::map<SensorNoiseType, NoisePtr> noises;
 
   /// \brief Sdf sensor.
-  public: sdf::Lidar sdfLidar;
+public:
+  sdf::Lidar sdfLidar;
 
   /// \brief Number of channels of the raw lidar buffer
-  public: const unsigned int kChannelCount = 3u;
+public:
+  const unsigned int kChannelCount = 3u;
 };
 
 //////////////////////////////////////////////////
 Lidar::Lidar()
-  : dataPtr(new LidarPrivate())
+    : dataPtr(new LidarPrivate())
 {
 }
 
@@ -87,7 +93,7 @@ void Lidar::Fini()
 {
   if (this->laserBuffer)
   {
-    delete [] this->laserBuffer;
+    delete[] this->laserBuffer;
     this->laserBuffer = nullptr;
   }
 }
@@ -109,16 +115,17 @@ bool Lidar::Load(const sdf::Sensor &_sdf)
 
   // Check if this is the right type
   if (_sdf.Type() != sdf::SensorType::LIDAR &&
-      _sdf.Type() != sdf::SensorType::GPU_LIDAR)
+      _sdf.Type() != sdf::SensorType::GPU_LIDAR &&
+      _sdf.Type() != sdf::SensorType::GPU_LIDAR_WITH_SCANNING_PATTERN)
   {
     gzerr << "Attempting to a load a Lidar sensor, but received "
-      << "a " << _sdf.TypeStr() << std::endl;
+          << "a " << _sdf.TypeStr() << std::endl;
   }
 
   if (_sdf.LidarSensor() == nullptr)
   {
     gzerr << "Attempting to a load a Lidar sensor, but received "
-      << "a null sensor." << std::endl;
+          << "a null sensor." << std::endl;
     return false;
   }
 
@@ -128,16 +135,16 @@ bool Lidar::Load(const sdf::Sensor &_sdf)
 
   this->dataPtr->pub =
       this->dataPtr->node.Advertise<gz::msgs::LaserScan>(
-        this->Topic());
+          this->Topic());
   if (!this->dataPtr->pub)
   {
     gzerr << "Unable to create publisher on topic["
-      << this->Topic() << "].\n";
+          << this->Topic() << "].\n";
     return false;
   }
 
   gzdbg << "Laser scans for [" << this->Name() << "] advertised on ["
-         << this->Topic() << "]" << std::endl;
+        << this->Topic() << "]" << std::endl;
 
   // Load ray atributes
   this->dataPtr->sdfLidar = *_sdf.LidarSensor();
@@ -165,10 +172,10 @@ bool Lidar::Load(const sdf::Sensor &_sdf)
 
   // Handle noise model settings.
   const std::map<SensorNoiseType, sdf::Noise> noises = {
-    {LIDAR_NOISE, this->dataPtr->sdfLidar.LidarNoise()},
+      {LIDAR_NOISE, this->dataPtr->sdfLidar.LidarNoise()},
   };
 
-  for (const auto & [noiseType, noiseSdf] : noises)
+  for (const auto &[noiseType, noiseSdf] : noises)
   {
     if (noiseSdf.Type() == sdf::NoiseType::GAUSSIAN)
     {
@@ -180,14 +187,14 @@ bool Lidar::Load(const sdf::Sensor &_sdf)
           !math::equal(noiseSdf.DynamicBiasCorrelationTime(), 0.0))
       {
         this->dataPtr->noises[noiseType] =
-          NoiseFactory::NewNoiseModel(noiseSdf);
+            NoiseFactory::NewNoiseModel(noiseSdf);
       }
     }
     else if (noiseSdf.Type() != sdf::NoiseType::NONE)
     {
       gzwarn << "The lidar sensor only supports Gaussian noise. "
-       << "The supplied noise type[" << static_cast<int>(noiseSdf.Type())
-       << "] is not supported." << std::endl;
+             << "The supplied noise type[" << static_cast<int>(noiseSdf.Type())
+             << "] is not supported." << std::endl;
     }
   }
 
@@ -205,15 +212,15 @@ bool Lidar::Load(sdf::ElementPtr _sdf)
 
 /////////////////////////////////////////////////
 gz::common::ConnectionPtr Lidar::ConnectNewLidarFrame(
-          std::function<void(const float *_scan, unsigned int _width,
-                  unsigned int _heighti, unsigned int _channels,
-                  const std::string &/*_format*/)> /*_subscriber*/)
+    std::function<void(const float *_scan, unsigned int _width,
+                       unsigned int _heighti, unsigned int _channels,
+                       const std::string & /*_format*/)> /*_subscriber*/)
 {
   return nullptr;
 }
 
 //////////////////////////////////////////////////
-bool Lidar::Update(const std::chrono::steady_clock::duration &/*_now*/)
+bool Lidar::Update(const std::chrono::steady_clock::duration & /*_now*/)
 {
   gzerr << "No lidar data being updated.\n";
   return false;
@@ -254,7 +261,7 @@ bool Lidar::PublishLidarScan(const std::chrono::steady_clock::duration &_now)
   std::lock_guard<std::mutex> lock(this->lidarMutex);
 
   *this->dataPtr->laserMsg.mutable_header()->mutable_stamp() =
-    msgs::Convert(_now);
+      msgs::Convert(_now);
   // Remove 'data' entries before adding new ones
   this->dataPtr->laserMsg.mutable_header()->clear_data();
   auto frame = this->dataPtr->laserMsg.mutable_header()->add_data();
@@ -267,7 +274,7 @@ bool Lidar::PublishLidarScan(const std::chrono::steady_clock::duration &_now)
 
   // Store the latest laser scans into laserMsg
   msgs::Set(this->dataPtr->laserMsg.mutable_world_pose(),
-      this->Pose());
+            this->Pose());
 
   const int numRays = this->RayCount() * this->VerticalRayCount();
   if (this->dataPtr->laserMsg.ranges_size() != numRays)
@@ -293,7 +300,7 @@ bool Lidar::PublishLidarScan(const std::chrono::steady_clock::duration &_now)
       range = this->Clamp(range);
       this->dataPtr->laserMsg.set_ranges(index, range);
       this->dataPtr->laserMsg.set_intensities(index,
-          this->laserBuffer[index * this->dataPtr->kChannelCount + 1]);
+                                              this->laserBuffer[index * this->dataPtr->kChannelCount + 1]);
     }
   }
 
@@ -307,7 +314,7 @@ bool Lidar::PublishLidarScan(const std::chrono::steady_clock::duration &_now)
 //////////////////////////////////////////////////
 bool Lidar::IsHorizontal() const
 {
-//  return this->dataPtr->laserCam->IsHorizontal();
+  //  return this->dataPtr->laserCam->IsHorizontal();
   return 0;
 }
 
@@ -357,7 +364,7 @@ double Lidar::RangeMax() const
 double Lidar::AngleResolution() const
 {
   return (this->AngleMax() - this->AngleMin()).Radian() /
-    (this->RangeCount()-1);
+         (this->RangeCount() - 1);
 }
 
 //////////////////////////////////////////////////
@@ -376,7 +383,7 @@ unsigned int Lidar::RayCount() const
 unsigned int Lidar::RangeCount() const
 {
   return static_cast<unsigned int>(this->RayCount() *
-    this->dataPtr->sdfLidar.HorizontalScanResolution());
+                                   this->dataPtr->sdfLidar.HorizontalScanResolution());
 }
 
 //////////////////////////////////////////////////
@@ -389,7 +396,7 @@ unsigned int Lidar::VerticalRayCount() const
 unsigned int Lidar::VerticalRangeCount() const
 {
   unsigned int rows = static_cast<unsigned int>(this->VerticalRayCount() *
-    this->dataPtr->sdfLidar.VerticalScanResolution());
+                                                this->dataPtr->sdfLidar.VerticalScanResolution());
   if (rows > 1)
     return rows;
   else
@@ -424,7 +431,7 @@ gz::math::Angle Lidar::VerticalAngleMax() const
 double Lidar::VerticalAngleResolution() const
 {
   return (this->VerticalAngleMax() - this->VerticalAngleMin()).Radian() /
-    (this->VerticalRangeCount()-1);
+         (this->VerticalRangeCount() - 1);
 }
 
 //////////////////////////////////////////////////
@@ -450,7 +457,7 @@ void Lidar::Ranges(std::vector<double> &_ranges) const
   for (unsigned int i = 0; i < size; ++i)
   {
     _ranges[i] = this->Clamp(
-    this->laserBuffer[i * this->dataPtr->kChannelCount]);
+        this->laserBuffer[i * this->dataPtr->kChannelCount]);
   }
 }
 
@@ -461,8 +468,8 @@ double Lidar::Range(const int _index) const
 
   // \todo(iche033) interpolate if ray count != range count, i.e. resolution > 1
   if (!this->laserBuffer || _index >= static_cast<int>(
-      this->RayCount() * this->VerticalRayCount() *
-      this->dataPtr->kChannelCount))
+                                          this->RayCount() * this->VerticalRayCount() *
+                                          this->dataPtr->kChannelCount))
   {
     gzwarn << "Lidar range not available for index: " << _index << std::endl;
     return 0.0;
@@ -478,8 +485,8 @@ double Lidar::Retro(const int _index) const
 
   // \todo(iche033) interpolate if ray count != range count, i.e. resolution > 1
   if (!this->laserBuffer || _index >= static_cast<int>(
-      this->RayCount() * this->VerticalRayCount() *
-      this->dataPtr->kChannelCount))
+                                          this->RayCount() * this->VerticalRayCount() *
+                                          this->dataPtr->kChannelCount))
   {
     gzwarn << "Lidar retro not available for index: " << _index << std::endl;
     return 0.0;
@@ -502,8 +509,8 @@ uint32_t Lidar::VisibilityMask() const
 //////////////////////////////////////////////////
 bool Lidar::IsActive() const
 {
-//  return Sensor::IsActive() ||
-//    (this->dataPtr->pub && this->dataPtr->pub->HasConnections());
+  //  return Sensor::IsActive() ||
+  //    (this->dataPtr->pub && this->dataPtr->pub->HasConnections());
   return true;
 }
 
