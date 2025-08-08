@@ -159,8 +159,6 @@ namespace gz
       /// \return True if pattern file was loaded successfully
       public: bool IsPatternScanningEnabled() const;
 
-
-
       GZ_UTILS_WARN_IGNORE__DLL_INTERFACE_MISSING
       /// \brief Data pointer for private data
       /// \internal
